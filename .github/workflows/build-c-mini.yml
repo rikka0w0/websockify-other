@@ -72,13 +72,9 @@ jobs:
             exit 1
           fi
 
-      - name: Package outputs
-        run: |
-          set -eux
-          tar -C "$GITHUB_WORKSPACE/out" -czf "$GITHUB_WORKSPACE/websockify-c-mini-static.tar.gz" .
-          tar -tzf "$GITHUB_WORKSPACE/websockify-c-mini-static.tar.gz"
-
       - uses: actions/upload-artifact@v4
         with:
           name: websockify-c-mini-static
-          path: websockify-c-mini-static.tar.gz
+          path: |
+            out/websockify-linux-amd64-static
+            out/websockify-linux-mips32-be-static

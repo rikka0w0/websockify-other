@@ -1,0 +1,84 @@
+name: build-c-mini
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    env:
+      TOOLCHAIN_URL: https://downloads.openwrt.org/releases/25.12.5/targets/bmips/bcm63268/openwrt-toolchain-25.12.5-bmips-bcm63268_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+      TARGET: mips-openwrt-linux-musl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl file musl-tools tar xz-utils zstd
+
+      - name: Build linux amd64 static
+        run: |
+          set -eux
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          make -C c-mini clean
+          make -C c-mini -j"$(nproc)" \
+            CC=musl-gcc \
+            CFLAGS="-Os -pipe" \
+            LDFLAGS="-static"
+          cp c-mini/websockify "$GITHUB_WORKSPACE/out/websockify-linux-amd64-static"
+          strip "$GITHUB_WORKSPACE/out/websockify-linux-amd64-static"
+          file "$GITHUB_WORKSPACE/out/websockify-linux-amd64-static"
+          if readelf -d "$GITHUB_WORKSPACE/out/websockify-linux-amd64-static" 2>/dev/null | grep -q NEEDED; then
+            echo "amd64 binary is not static" >&2
+            exit 1
+          fi
+
+      - name: Download and unpack OpenWrt toolchain
+        run: |
+          set -eux
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+          curl --fail --retry 3 -L "$TOOLCHAIN_URL" -o /tmp/openwrt-toolchain.tar.zst
+          tar --use-compress-program=unzstd -xf /tmp/openwrt-toolchain.tar.zst -C "$GITHUB_WORKSPACE/toolchain" --strip-components=1
+          TOOLCHAIN_GCC="$(find "$GITHUB_WORKSPACE/toolchain" \( -type f -o -type l \) -name "${TARGET}-gcc" -print -quit)"
+          if [ -z "$TOOLCHAIN_GCC" ]; then
+            echo "failed to find ${TARGET}-gcc under unpacked toolchain" >&2
+            find "$GITHUB_WORKSPACE/toolchain" -maxdepth 4 -type d -o -type l -o -type f | sort | sed -n '1,200p' >&2
+            exit 1
+          fi
+          TOOLCHAIN_BIN="$(dirname "$TOOLCHAIN_GCC")"
+          echo "STAGING_DIR=$GITHUB_WORKSPACE/toolchain" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          "$TOOLCHAIN_GCC" --version
+          STAGING_DIR="$GITHUB_WORKSPACE/toolchain" "$TOOLCHAIN_GCC" -x c -c /dev/null -o /tmp/openwrt-toolchain-smoke.o
+
+      - name: Build linux mips32 big-endian static
+        run: |
+          set -eux
+          make -C c-mini clean
+          make -C c-mini -j"$(nproc)" \
+            CC="${TARGET}-gcc" \
+            CFLAGS="-Os -pipe -mips32 -mtune=mips32 -msoft-float" \
+            LDFLAGS="-static"
+          cp c-mini/websockify "$GITHUB_WORKSPACE/out/websockify-linux-mips32-be-static"
+          "${TARGET}-strip" "$GITHUB_WORKSPACE/out/websockify-linux-mips32-be-static"
+          file "$GITHUB_WORKSPACE/out/websockify-linux-mips32-be-static"
+          if "${TARGET}-readelf" -d "$GITHUB_WORKSPACE/out/websockify-linux-mips32-be-static" 2>/dev/null | grep -q NEEDED; then
+            echo "mips32 big-endian binary is not static" >&2
+            exit 1
+          fi
+
+      - name: Package outputs
+        run: |
+          set -eux
+          tar -C "$GITHUB_WORKSPACE/out" -czf "$GITHUB_WORKSPACE/websockify-c-mini-static.tar.gz" .
+          tar -tzf "$GITHUB_WORKSPACE/websockify-c-mini-static.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: websockify-c-mini-static
+          path: websockify-c-mini-static.tar.gz
